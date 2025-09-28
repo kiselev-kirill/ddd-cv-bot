@@ -16,6 +16,7 @@ yandex-cloud-ml-sdk = "^0.16.0"
 cachetools = "^6.2.0"
 python-dotenv = "^1.1.1"
 
+#readme = "README.md"
 
 [build-system]
 requires = ["poetry-core"]
