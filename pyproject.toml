@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "ddd-cv-bot"
+version = "0.1.0"
+description = ""
+authors = ["kirillkiselev-slim <kiselev99kirill1501@gmail.com>"]
+readme = "README.md"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+alembic = "^1.16.5"
+aiogram = "^3.22.0"
+yandex-cloud-ml-sdk = "^0.16.0"
+cachetools = "^6.2.0"
+python-dotenv = "^1.1.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

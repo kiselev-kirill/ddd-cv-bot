@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "python-developer-bot"
+version = "0.1.0"
+description = "Kirill Kiselev Bot"
+authors = ["kirillkiselev-slim <kiselev99kirill1501@gmail.com>"]
+#readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11"
+aiogram = "^3.20"
+python-dotenv = "^1.1"
+yandex-cloud-ml-sdk = "^0.9"
+cachetools = "^5.5.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
