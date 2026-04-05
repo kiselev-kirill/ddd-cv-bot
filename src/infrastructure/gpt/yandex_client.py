@@ -8,15 +8,23 @@ sdk = YCloudML(
 )
 
 
-async def ask_yandex_gpt(question: str) -> str:
+async def ask_yandex_gpt(question: str, memory_context: str = "") -> str:
     model = sdk.models.completions("yandexgpt-lite", model_version="rc")
     model = model.configure(temperature=0.3)
     resume = load_resume()
+    memory_part = (
+        f"\n\nКонтекст прошлых диалогов с пользователем:\n{memory_context}"
+        if memory_context
+        else ""
+    )
     result = model.run(
         [
             {
                 "role": "system",
-                "text": f"Ты — кандидат. Вот его резюме:\n{resume}.{settings.GPT_PROMPT}",
+                "text": (
+                    f"Ты — кандидат. Вот его резюме:\n{resume}\n\n"
+                    f"{settings.GPT_PROMPT}{memory_part}"
+                ),
             },
             {
                 "role": "user",
@@ -26,5 +34,3 @@ async def ask_yandex_gpt(question: str) -> str:
     )
 
     return result[0].text
-
-
