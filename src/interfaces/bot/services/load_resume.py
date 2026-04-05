@@ -2,7 +2,7 @@ from pathlib import Path
 
 from src.config import BASE_DIR
 
-DATA_PATH = Path(BASE_DIR / "data" )
+DATA_PATH = Path(BASE_DIR / "interfaces" / "bot" / "data")
 
 
 def load_stack() -> str:

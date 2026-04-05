@@ -1,5 +1,7 @@
+import json
 import logging
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
 from src.config import BASE_DIR
 
@@ -24,10 +26,16 @@ class BotLogger:
 
         logger = logging.getLogger("bot")
         logger.setLevel(logging.INFO)
-        logger.addHandler(handler)
+        if not logger.handlers:
+            logger.addHandler(handler)
         logger.propagate = False
 
         return logger
 
 
 bot_logger = BotLogger.setup_logger()
+
+
+def log_event(event: str, **fields: Any) -> None:
+    payload = {"event": event, **fields}
+    bot_logger.info(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
