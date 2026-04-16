@@ -19,6 +19,7 @@ python-dotenv = "^1.1.1"
 sqlalchemy = "^2.0.44"
 asyncpg = "^0.30.0"
 greenlet = "^3.2.4"
+aiohttp-socks = "^0.10.1"
 
 #readme = "README.md"
 

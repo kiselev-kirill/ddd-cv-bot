@@ -20,6 +20,7 @@ class Settings:
     YANDEX_FOLDER_ID: str | None = os.getenv("YANDEX_FOLDER_ID")
 
     TELEGRAM_BOT_TOKEN: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_PROXY_URL: str | None = os.getenv("TELEGRAM_PROXY_URL")
 
     GPT_PROMPT: str = os.getenv("GPT_PROMPT", "")
 

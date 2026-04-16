@@ -1,6 +1,8 @@
 import asyncio
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 from src.config import settings
@@ -20,16 +22,21 @@ async def _register_bot_commands(bot: Bot) -> None:
 
 
 async def main():
+    session = AiohttpSession(proxy=settings.TELEGRAM_PROXY_URL)
     bot = Bot(
         token=settings.TELEGRAM_BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode="MarkdownV2"))
-    dp = Dispatcher()
-    dp.include_router(chat_router)
-    await _register_bot_commands(bot)
-    await bot.delete_webhook(drop_pending_updates=True)
-    dp.message.middleware(ChatActionMiddleware())
-    dp.message.middleware(ThrottlingMiddleware())
-    await dp.start_polling(bot)
+    try:
+        dp = Dispatcher()
+        dp.include_router(chat_router)
+        await _register_bot_commands(bot)
+        await bot.delete_webhook(drop_pending_updates=True)
+        dp.message.middleware(ChatActionMiddleware())
+        dp.message.middleware(ThrottlingMiddleware())
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
