@@ -2,15 +2,19 @@ import warnings
 from datetime import UTC, datetime
 from time import perf_counter
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.fsm.context import FSMContext
-from aiogram.types import (Message, InlineKeyboardMarkup,
-                           InlineKeyboardButton, CallbackQuery,
-                           KeyboardButton)
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+)
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 from src.application.memory import MemoryService
 from src.config import settings
@@ -19,17 +23,21 @@ from src.infrastructure.gpt.yandex_client import ask_yandex_gpt
 from src.infrastructure.postgres.memory_repository import PostgresMemoryRepository
 from src.infrastructure.postgres.session import session_scope
 from src.interfaces.bot.bot_logging import log_event
+from src.interfaces.bot.bot_logging import bot_logger
+from src.interfaces.bot.constants import get_commands_with_description
+from src.interfaces.bot.i18n import DEFAULT_LOCALE, normalize_locale, t
 from src.interfaces.bot.keyboards.main import get_main_menu_keyboard
 from src.interfaces.bot.metrics import bot_metrics
-from src.interfaces.bot.services.load_resume import load_stack, load_about_me
-from ..constants import COMMANDS_WITH_DESCRIPTION
-from ..bot_logging import bot_logger
+from src.interfaces.bot.services.telegram_format import render_markdown_to_html
+from src.interfaces.bot.services.load_resume import load_about_me, load_stack
 
-warnings.filterwarnings("ignore",
-                        category=SyntaxWarning,
-                        message="invalid escape sequence")
+warnings.filterwarnings(
+    "ignore",
+    category=SyntaxWarning,
+    message="invalid escape sequence",
+)
 router = Router()
-COMMANDS_BLOCK = f"*Доступные команды:*\n{COMMANDS_WITH_DESCRIPTION}"
+STOP_AI_TEXTS = (t("ru", "talk.stop_button"), t("en", "talk.stop_button"))
 
 
 class ChatMode(StatesGroup):
@@ -48,6 +56,25 @@ def _create_memory_service(repository: PostgresMemoryRepository) -> MemoryServic
     )
 
 
+def _locale_from_message(message: Message) -> str:
+    if not message.from_user:
+        return DEFAULT_LOCALE
+    return normalize_locale(message.from_user.language_code)
+
+
+def _locale_from_callback(callback: CallbackQuery) -> str:
+    if not callback.from_user:
+        return DEFAULT_LOCALE
+    return normalize_locale(callback.from_user.language_code)
+
+
+def _commands_block(locale: str) -> str:
+    return (
+        f"{t(locale, 'commands.title')}\n"
+        f"{get_commands_with_description(locale)}"
+    )
+
+
 def _seconds_until(blocked_until: datetime | None) -> int:
     if blocked_until is None:
         return 0
@@ -61,23 +88,31 @@ def _format_countdown(seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
-def _format_quota_message(quota: MemoryQuota) -> str:
+def _format_quota_message(quota: MemoryQuota, locale: str) -> str:
     remaining = max(0, quota.limit - quota.used)
     if quota.allowed:
-        return (
-            "✅ Лимит активен\\.\n"
-            f"Использовано: {quota.used}/{quota.limit}\n"
-            f"Осталось: {remaining}\n"
-            f"Окно: {settings.MEMORY_LIMIT_WINDOW_MINUTES} минут\\."
+        return "\n".join(
+            (
+                t(locale, "quota.active"),
+                t(locale, "quota.used", used=quota.used, limit=quota.limit),
+                t(locale, "quota.remaining", remaining=remaining),
+                t(
+                    locale,
+                    "quota.window",
+                    minutes=settings.MEMORY_LIMIT_WINDOW_MINUTES,
+                ),
+            )
         )
 
     seconds_until_reset = _seconds_until(quota.blocked_until)
     countdown = _format_countdown(seconds_until_reset)
-    return (
-        "⛔ Лимит достигнут\\.\n"
-        f"Использовано: {quota.used}/{quota.limit}\n"
-        f"Следующий сброс через: {countdown}\n"
-        f"Окно: {settings.MEMORY_LIMIT_WINDOW_MINUTES} минут\\."
+    return "\n".join(
+        (
+            t(locale, "quota.reached"),
+            t(locale, "quota.used", used=quota.used, limit=quota.limit),
+            t(locale, "quota.next_reset", countdown=countdown),
+            t(locale, "quota.window", minutes=settings.MEMORY_LIMIT_WINDOW_MINUTES),
+        )
     )
 
 
@@ -94,64 +129,99 @@ def _classify_gpt_error(error: Exception) -> str:
 
 @router.message(Command("start"))
 async def start_command(message: Message):
-    name = message.from_user.first_name
-    bot_logger.info(f"User <{message.from_user.username}> used your /start")
-    ai_button = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="💬 Поговорить с ИИ о резюмe",
-            callback_data="talk_to_ai")]
-    ])
-    await message.answer(
-        f"*Привет, {name}👋*\n"
-        "Я бот Кирилла🤖\n\n"
-        "Помогу быстро узнать обо мне и отвечу на вопросы по резюме 💼\n"
-        "Чтобы начать диалог, нажми *Поговорить с ИИ о резюме* ниже\\.\n\n"
-        f"{COMMANDS_BLOCK}\n\n"
-        "⏱️ Лимит ИИ\\-чата: "
-        f"{settings.MEMORY_USER_MESSAGE_LIMIT} сообщений "
-        f"за {settings.MEMORY_LIMIT_WINDOW_MINUTES} минут\\!❗",
-        reply_markup=ai_button,
+    locale = _locale_from_message(message)
+    name = message.from_user.first_name if message.from_user else (
+        "друг" if locale == "ru" else "friend"
+    )
+    username = message.from_user.username if message.from_user else None
+    bot_logger.info("User <%s> used your /start", username)
+    ai_button = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t(locale, "start.talk_button"),
+                    callback_data="talk_to_ai",
+                )
+            ]
+        ]
     )
     await message.answer(
-        "Быстрые команды всегда под рукой 👇",
-        reply_markup=get_main_menu_keyboard(),
+        "\n".join(
+            (
+                t(locale, "start.greeting", name=name),
+                t(locale, "start.intro_1"),
+                "",
+                t(locale, "start.intro_2"),
+                t(locale, "start.intro_3"),
+                "",
+                _commands_block(locale),
+                "",
+                t(
+                    locale,
+                    "start.limit",
+                    limit=settings.MEMORY_USER_MESSAGE_LIMIT,
+                    minutes=settings.MEMORY_LIMIT_WINDOW_MINUTES,
+                ),
+            )
+        ),
+        reply_markup=ai_button,
+        parse_mode=None,
+    )
+    await message.answer(
+        t(locale, "start.quick_commands"),
+        reply_markup=get_main_menu_keyboard(locale),
+        parse_mode=None,
     )
 
 
 @router.message(Command("about_kirill"))
-async def start_command(message: Message):
-    bot_logger.info(f"User <{message.from_user.username}> used your /about_kirill")
+async def about_kirill_command(message: Message):
+    locale = _locale_from_message(message)
+    username = message.from_user.username if message.from_user else None
+    bot_logger.info("User <%s> used your /about_kirill", username)
     await message.answer(
-        load_about_me(),
-        parse_mode="Markdown",
-        reply_markup=get_main_menu_keyboard(),
+        render_markdown_to_html(load_about_me(locale)),
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard(locale),
     )
 
 
 @router.message(Command("short_stack"))
 async def short_stack_command(message: Message):
-    bot_logger.info(f"User <{message.from_user.username}> used your /short_stack")
+    locale = _locale_from_message(message)
+    username = message.from_user.username if message.from_user else None
+    bot_logger.info("User <%s> used your /short_stack", username)
     await message.answer(
-        load_stack(),
-        parse_mode="Markdown",
-        reply_markup=get_main_menu_keyboard(),
+        render_markdown_to_html(load_stack(locale)),
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard(locale),
     )
 
 
 @router.message(Command("help"))
 async def help_command(message: Message):
-    user_message = (
-        "✨ Вот как я могу помочь:\n\n"
-        f"{COMMANDS_BLOCK}\n\n"
-        "Хочешь пообщаться с ИИ по резюме? Нажми /start и выбери кнопку 💬"
+    locale = _locale_from_message(message)
+    user_message = "\n".join(
+        (
+            f"✨ {t(locale, 'help.intro')}",
+            "",
+            _commands_block(locale),
+            "",
+            t(locale, "help.ai_hint"),
+        )
     )
-    await message.answer(user_message, reply_markup=get_main_menu_keyboard())
+    await message.answer(
+        user_message,
+        reply_markup=get_main_menu_keyboard(locale),
+        parse_mode=None,
+    )
 
 
 @router.message(Command("quota"))
 async def quota_command(message: Message):
+    locale = _locale_from_message(message)
     if not message.from_user:
-        await message.answer("Не удалось определить пользователя\\.")
+        await message.answer(t(locale, "quota.user_not_defined"), parse_mode=None)
         return
 
     user_id = message.from_user.id
@@ -164,11 +234,11 @@ async def quota_command(message: Message):
             quota = await service.check_quota(user_id=user_id)
     except RuntimeError as err:
         bot_logger.error("Memory storage configuration error: %s", err)
-        await message.answer("Ошибка конфигурации памяти\\. Проверьте DATABASE\\_URL\\.")
+        await message.answer(t(locale, "about.memory_config_error"), parse_mode=None)
         return
     except Exception:
         bot_logger.exception("Failed to get quota info")
-        await message.answer("Не удалось получить информацию о лимите\\.")
+        await message.answer(t(locale, "quota.fetch_error"), parse_mode=None)
         return
 
     log_event(
@@ -180,53 +250,76 @@ async def quota_command(message: Message):
         allowed=quota.allowed,
         reset_in_seconds=_seconds_until(quota.blocked_until),
     )
-    await message.answer(_format_quota_message(quota), reply_markup=get_main_menu_keyboard())
+    await message.answer(
+        _format_quota_message(quota, locale),
+        reply_markup=get_main_menu_keyboard(locale),
+        parse_mode=None,
+    )
 
 
 @router.callback_query(F.data == "talk_to_ai")
 async def talk_to_ai_handler(callback: CallbackQuery, state: FSMContext):
-    stop_button = KeyboardButton(text="❌ Остановить разговор с ИИ")
+    locale = _locale_from_callback(callback)
+    stop_button = KeyboardButton(text=t(locale, "talk.stop_button"))
     builder = ReplyKeyboardBuilder()
     builder.row(stop_button)
     stop_keyboard = builder.as_markup(
         resize_keyboard=True,
-        input_field_placeholder="Введите свой вопрос..."
+        input_field_placeholder=t(locale, "talk.stop_placeholder"),
     )
-    await callback.message.answer(
-        "Супер, начинаем диалог 👨‍💼\n\n"
-        "Напиши любой вопрос по резюме, и я отвечу как кандидат\\.\n"
-        "Чтобы выйти из режима ИИ, нажми кнопку ❌\n\n"
-        f"{COMMANDS_BLOCK}",
-        reply_markup=stop_keyboard
-    )
+    if callback.message:
+        await callback.message.answer(
+            "\n".join(
+                (
+                    t(locale, "talk.started"),
+                    "",
+                    t(locale, "talk.prompt"),
+                    t(locale, "talk.exit_hint"),
+                    "",
+                    _commands_block(locale),
+                )
+            ),
+            reply_markup=stop_keyboard,
+            parse_mode=None,
+        )
     await state.set_state(ChatMode.talking_to_ai)
-    await callback.answer(text="Вы начали разговор с ИИ")
+    await callback.answer(text=t(locale, "talk.started_callback"))
 
 
-@router.message(F.text == "❌ Остановить разговор с ИИ")
+@router.message(F.text.in_(STOP_AI_TEXTS))
 async def stop_ai_chat(message: Message, state: FSMContext):
+    locale = _locale_from_message(message)
     await state.clear()
     await message.answer(
-        "ИИ\\-режим отключён\\!\n\n"
-        "Можно снова начать в любой момент через /start 💬\n\n"
-        f"{COMMANDS_BLOCK}",
-        reply_markup=get_main_menu_keyboard()
+        "\n".join(
+            (
+                t(locale, "talk.stopped"),
+                "",
+                t(locale, "talk.stopped_hint"),
+                "",
+                _commands_block(locale),
+            )
+        ),
+        reply_markup=get_main_menu_keyboard(locale),
+        parse_mode=None,
     )
 
 
 @router.message(
     ChatMode.talking_to_ai,
-    flags={"chat_action": "typing", "rate_limit": 7})
+    flags={"chat_action": "typing", "rate_limit": 7},
+)
 async def handle_ai_question(message: Message):
+    locale = _locale_from_message(message)
     if not message.from_user:
-        await message.reply("Пользователь не определён\\.")
+        await message.reply(t(locale, "ai.user_not_defined"), parse_mode=None)
         return
 
     started_at = perf_counter()
     user_id = message.from_user.id
     username = message.from_user.username
     if not message.text:
-        await message.reply("Пожалуйста, отправьте текстовый вопрос 💬")
+        await message.reply(t(locale, "ai.text_only"), parse_mode=None)
         return
     question_text = message.text
 
@@ -263,7 +356,7 @@ async def handle_ai_question(message: Message):
                     avg_response_ms=metrics.avg_response_ms,
                     p95_response_ms=metrics.p95_response_ms,
                 )
-                await message.reply(_format_quota_message(quota))
+                await message.reply(_format_quota_message(quota, locale), parse_mode=None)
                 return
 
             context = await memory_service.build_context(
@@ -273,7 +366,7 @@ async def handle_ai_question(message: Message):
             memory_context = memory_service.format_context(context)
     except RuntimeError as err:
         bot_logger.error("Memory storage configuration error: %s", err)
-        await message.reply("Ошибка конфигурации памяти\\. Проверьте DATABASE\\_URL\\.")
+        await message.reply(t(locale, "about.memory_config_error"), parse_mode=None)
         return
     except Exception:
         response_ms = round((perf_counter() - started_at) * 1000, 2)
@@ -293,12 +386,16 @@ async def handle_ai_question(message: Message):
             p95_response_ms=metrics.p95_response_ms,
         )
         bot_logger.exception("Failed to read memory context")
-        await message.reply("Не удалось обработать сообщение\\. Попробуйте снова позже\\.")
+        await message.reply(t(locale, "ai.processing_error"), parse_mode=None)
         return
 
     # GPT call outside DB transaction
     try:
-        reply = await ask_yandex_gpt(question_text, memory_context=memory_context)
+        reply = await ask_yandex_gpt(
+            question_text,
+            memory_context=memory_context,
+            locale=locale,
+        )
     except Exception as error:
         response_ms = round((perf_counter() - started_at) * 1000, 2)
         bot_metrics.record_request(latency_ms=response_ms, success=False)
@@ -317,7 +414,7 @@ async def handle_ai_question(message: Message):
             p95_response_ms=metrics.p95_response_ms,
         )
         bot_logger.exception("Failed to call GPT model")
-        await message.reply("Не удалось обработать сообщение\\. Попробуйте снова позже\\.")
+        await message.reply(t(locale, "ai.processing_error"), parse_mode=None)
         return
 
     # Write transaction: persist dialogue and refresh summary
@@ -333,7 +430,7 @@ async def handle_ai_question(message: Message):
             summary = await memory_service.update_summary_if_needed(user_id=user_id)
     except RuntimeError as err:
         bot_logger.error("Memory storage configuration error: %s", err)
-        await message.reply("Ошибка конфигурации памяти\\. Проверьте DATABASE\\_URL\\.")
+        await message.reply(t(locale, "about.memory_config_error"), parse_mode=None)
         return
     except Exception:
         response_ms = round((perf_counter() - started_at) * 1000, 2)
@@ -353,7 +450,7 @@ async def handle_ai_question(message: Message):
             p95_response_ms=metrics.p95_response_ms,
         )
         bot_logger.exception("Failed to save turn or update summary")
-        await message.reply("Не удалось сохранить контекст диалога\\. Попробуйте снова позже\\.")
+        await message.reply(t(locale, "ai.save_context_error"), parse_mode=None)
         return
 
     response_ms = round((perf_counter() - started_at) * 1000, 2)
@@ -373,26 +470,34 @@ async def handle_ai_question(message: Message):
         avg_response_ms=metrics.avg_response_ms,
         p95_response_ms=metrics.p95_response_ms,
     )
-    bot_logger.info(f"User <{username}> used AI feature")
+    bot_logger.info("User <%s> used AI feature", username)
     try:
         await message.reply(f"`{reply}`")
     except TelegramBadRequest:
-        await message.reply(reply)
+        await message.reply(reply, parse_mode=None)
 
 
 @router.message()
 async def fallback_handler(message: Message, state: FSMContext):
-    bot_logger.info(
-        f"User <{message.from_user.username}> "
-        f"wrote unreachable message: {message.text} ")
+    locale = _locale_from_message(message)
+    username = message.from_user.username if message.from_user else None
+    bot_logger.info("User <%s> wrote unreachable message: %s", username, message.text)
     current_state = await state.get_state()
     if current_state == ChatMode.talking_to_ai:
         return
 
     await message.reply(
-        "🤔 Я не понял это сообщение\\.\n\n"
-        "Выбери команду ниже, и я подскажу дальше 👇\n\n"
-        f"{COMMANDS_BLOCK}\n\n"
-        "Для быстрого старта ИИ\\-диалога используй /start 💬",
-        reply_markup=get_main_menu_keyboard(),
+        "\n".join(
+            (
+                t(locale, "fallback.unknown"),
+                "",
+                t(locale, "fallback.choose_command"),
+                "",
+                _commands_block(locale),
+                "",
+                t(locale, "fallback.ai_hint"),
+            )
+        ),
+        reply_markup=get_main_menu_keyboard(locale),
+        parse_mode=None,
     )
