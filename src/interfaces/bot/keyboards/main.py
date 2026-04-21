@@ -1,8 +1,10 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
+from src.interfaces.bot.i18n import t
 
-def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
+
+def get_main_menu_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text="/start"), KeyboardButton(text="/help"))
     builder.row(
@@ -13,5 +15,5 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Выберите команду 👇",
+        input_field_placeholder=t(locale, "keyboard.placeholder"),
     )
